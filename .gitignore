@@ -2,7 +2,11 @@
 __pycache__/
 
 #chainlit
-.chainlit/
+.chainlit
+chainlit.md
 
-#
+#own stuff
 vectorstores/
+
+#Enviroments
+.env
