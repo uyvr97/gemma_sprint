@@ -6,12 +6,14 @@ import deepl
 
 from langchain_chroma import Chroma
 from langchain_community.llms import Ollama
-from langchain_core.prompts import PromptTemplate, ChatPromptTemplate
+from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.callbacks.manager import CallbackManager
 from langchain_core.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 import chainlit as cl
-from langchain.chains import RetrievalQA,RetrievalQAWithSourcesChain
+from langchain.memory import ConversationBufferWindowMemory
+from langchain.chains import RetrievalQA, ConversationalRetrievalChain
 from langchain_huggingface import HuggingFaceEmbeddings
+
 
 PROMPT = PromptTemplate.from_template( 
     template = """
@@ -41,22 +43,29 @@ def isKorean(text):
         print('Not Korean:', word)
         return False
 
-def revise_question(chat, query):
+def revise_question(chat, history, query):
     system = ("")
     human = """
     You are an assitant to a Formula 1 team.
     Rephrase the follow up question to be a standalone question.
     Question: {question}
     """
-    
-    # prompt = ChatPromptTemplate.from_messages([("system", system), MessagesPlaceholder(variable_name="history"), ("human", human)])
-    prompt = ChatPromptTemplate.from_messages([("system", system), ("human", human)])
+    print(f'history: {history}')
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system), 
+        MessagesPlaceholder(variable_name="history"), 
+        ("human", human)
+    ])
+    # prompt = ChatPromptTemplate.from_messages([("system", system), ("human", human)])
     print('prompt:', prompt)
 
     chain = prompt | chat
     try: 
-        revised_question = chain.invoke({"question": query})
-        print(f"result: {revised_question}")
+        revised_question = chain.invoke({
+            "history" : history,
+            "question": query,
+            })
 
     except Exception:
         err_msg = traceback.format_exc()
@@ -110,7 +119,12 @@ def qa_bot():
 
 @cl.on_chat_start
 async def start():
-    chain=qa_bot()
+
+    global memory_chain
+
+    chain=qa_bot()    
+    memory_chain = ConversationBufferWindowMemory(memory_key='chat_history', return_messages=True, k=5)
+
     msg=cl.Message(content="Firing up F1 regulration info bot...")
     await msg.send()
     msg.content= "Hi, welcome to F1 regularation info bot. What is your query?"
@@ -127,17 +141,25 @@ async def main(message):
     cb.answer_reached=True
 
     question = message.content
-    if isKorean(question)==True:
+    question_lang = isKorean(question)
+    if question_lang==True:
         question = translate_text(question)
 
     chat = load_llm()
-    revised_question = revise_question(chat, question)
+    history = memory_chain.load_memory_variables({})["chat_history"]
+    memory_chain.chat_memory.add_user_message(str(question))
+    revised_question = revise_question(chat, history, question)
 
-    res=await chain.ainvoke({"query": revised_question}, callbacks=[cb])
-    print(f"response: {res}")
-    answer=res["result"]
+    try:
+        res=await chain.ainvoke({"query": revised_question}, callbacks=[cb])
+        print(f"response: {res}")
+        answer=res["result"]    
+        memory_chain.chat_memory.add_ai_message(str(answer))
 
-    if isKorean(question)==True:
+    except Exception as e:
+        print("An error occurred:", e)
+
+    if question_lang==True:
         answer = translate_text(answer)
 
     await cl.Message(content=answer).send() 
